@@ -1,0 +1,23 @@
+<div id="key-list">
+  {% if revoked_name %}
+  <article role="status">Key <code>{{ revoked_name }}</code> was revoked.</article>
+  {% endif %}
+  {% if keys %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Rotate</th>
+        <th>Revoke</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for key_name in keys %}
+        {% include "partials/_key_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No Keys yet.</p>
+  {% endif %}
+</div>

@@ -1,0 +1,77 @@
+[project]
+name = "sekisho"
+version = "0.1.0"
+description = "Managed-identity reverse-proxy gateway for Microsoft Foundry OpenAI-compatible endpoints."
+readme = "CONTEXT.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "aiohttp>=3.10.0",
+    "anyio>=4.14.0",
+    "azure-identity>=1.25.3",
+    "azure-keyvault-secrets>=4.11.0",
+    "fastapi>=0.137.1",
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.1",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.49.0",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.14.0",
+    "mypy>=1.13.0",
+    "pytest>=9.1.0",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+    "ruff>=0.8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+src = ["src"]
+line-length = 132
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "ASYNC",  # flake8-async
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may exceed line length for fixture data and read files synchronously.
+"tests/**" = ["E501", "ASYNC240"]
+
+[tool.mypy]
+python_version = "3.14"
+mypy_path = "src"
+files = ["src"]
+plugins = ["pydantic.mypy"]
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+warn_unused_configs = true
+# Strict mode can be ratcheted on incrementally once the FastAPI route handlers
+# in web/routes.py carry explicit return annotations.
+
+[[tool.mypy.overrides]]
+module = ["azure.*"]
+ignore_missing_imports = true

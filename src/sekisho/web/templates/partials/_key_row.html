@@ -1,0 +1,14 @@
+<tr id="key-row-{{ key_name }}">
+  <td><code>{{ key_name }}</code></td>
+  <td>
+    <form hx-post="/admin/keys/{{ key_name }}/rotate" hx-target="#created-key" hx-swap="innerHTML">
+      <input type="number" name="grace_seconds" value="3600" min="0" aria-label="Grace seconds">
+      <button type="submit">Rotate</button>
+    </form>
+  </td>
+  <td>
+    <form hx-post="/admin/keys/{{ key_name }}/revoke" hx-target="#key-list" hx-swap="outerHTML">
+      <button type="submit" class="contrast">Revoke</button>
+    </form>
+  </td>
+</tr>

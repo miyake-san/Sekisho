@@ -1,0 +1,849 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.33.93.31351",
+      "templateHash": "7515003846038019958"
+    },
+    "name": "Sekisho — managed-identity reverse-proxy gateway to Microsoft Foundry",
+    "description": "Orchestrates the Sekisho v1 infrastructure: the Foundry account (Entra-only + audio models), the Key Vault Key store, the ACA gateway (system-assigned managed identity + Easy Auth), and the RBAC role assignments that bind them. Implements ADRs 0001, 0002 and 0003."
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus2",
+      "metadata": {
+        "description": "Optional. Location for all resources. NOTE: the ADR 0002 audio models (gpt-4o-mini-transcribe / gpt-4o-mini-tts) are REGIONAL; East US 2 is the default because it lists them."
+      }
+    },
+    "baseName": {
+      "type": "string",
+      "defaultValue": "sekisho",
+      "minLength": 2,
+      "maxLength": 12,
+      "metadata": {
+        "description": "Required. Short, lowercase, alphanumeric base name used to derive all resource names."
+      }
+    },
+    "containerImage": {
+      "type": "string",
+      "defaultValue": "mcr.microsoft.com/k8se/quickstart:latest",
+      "metadata": {
+        "description": "Optional. Gateway container image. Defaults to a public placeholder; CI replaces it with the real Sekisho image."
+      }
+    },
+    "aadClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "Required. Entra app registration (client) ID used by Container Apps Easy Auth."
+      }
+    },
+    "aadClientSecret": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Required. Entra app registration client secret. Surfaced only as an ACA secret; never hardcoded or committed."
+      }
+    },
+    "aadTenantId": {
+      "type": "string",
+      "defaultValue": "[subscription().tenantId]",
+      "metadata": {
+        "description": "Optional. Entra tenant ID used to build the OpenID issuer. Defaults to the deployment tenant."
+      }
+    },
+    "openIdIssuer": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional. Explicit OpenID issuer URL override. If empty, it is derived from the cloud Entra login endpoint and aadTenantId (the v2.0 issuer)."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Optional. Tags applied to all resources."
+      }
+    }
+  },
+  "variables": {
+    "token": "[take(uniqueString(resourceGroup().id, parameters('baseName')), 6)]",
+    "nameBase": "[toLower(parameters('baseName'))]",
+    "foundryName": "[format('{0}-foundry-{1}', variables('nameBase'), variables('token'))]",
+    "keyVaultName": "[take(format('kv{0}{1}', replace(variables('nameBase'), '-', ''), variables('token')), 24)]",
+    "environmentName": "[format('{0}-env-{1}', variables('nameBase'), variables('token'))]",
+    "appName": "[format('{0}-gw-{1}', variables('nameBase'), variables('token'))]",
+    "effectiveIssuer": "[if(empty(parameters('openIdIssuer')), format('{0}{1}/v2.0', environment().authentication.loginEndpoint, parameters('aadTenantId')), parameters('openIdIssuer'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "foundry",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "name": {
+            "value": "[variables('foundryName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "customSubDomainName": {
+            "value": "[variables('foundryName')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.33.93.31351",
+              "templateHash": "18402166910924467649"
+            },
+            "name": "Sekisho Foundry account + audio model deployments",
+            "description": "Provisions the Microsoft Foundry (Cognitive Services \"AIServices\") account with a custom subdomain and key-auth disabled (Entra-only), plus the serialized STT/TTS audio model deployments. Implements ADR 0001 (managed-identity gateway) and ADR 0002 (audio STT/TTS)."
+          },
+          "parameters": {
+            "name": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Name of the Foundry (Cognitive Services AIServices) account."
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "eastus2",
+              "metadata": {
+                "description": "Optional. Location. NOTE: the ADR 0002 audio models (gpt-4o-mini-transcribe / gpt-4o-mini-tts) are REGIONAL; East US 2 is a safe default that lists them."
+              }
+            },
+            "customSubDomainName": {
+              "type": "string",
+              "defaultValue": "[toLower(parameters('name'))]",
+              "metadata": {
+                "description": "Optional. Custom subdomain name. REQUIRED for Entra (AAD) token authentication; must be globally unique. Defaults to the lowercased account name."
+              }
+            },
+            "sku": {
+              "type": "string",
+              "defaultValue": "S0",
+              "metadata": {
+                "description": "Optional. Cognitive Services account SKU name."
+              }
+            },
+            "sttModelName": {
+              "type": "string",
+              "defaultValue": "gpt-4o-mini-transcribe",
+              "metadata": {
+                "description": "Optional. STT (speech-to-text) model/deployment name."
+              }
+            },
+            "sttModelVersion": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. STT model version. Leave empty to let Foundry pick the model default version (most robust); set to pin a specific version string."
+              }
+            },
+            "sttSkuName": {
+              "type": "string",
+              "defaultValue": "GlobalStandard",
+              "metadata": {
+                "description": "Optional. STT deployment SKU name (GlobalStandard or Standard, as offered in the region)."
+              }
+            },
+            "sttCapacity": {
+              "type": "int",
+              "defaultValue": 1,
+              "metadata": {
+                "description": "Optional. STT deployment capacity (capacity units; raise per your regional quota)."
+              }
+            },
+            "ttsModelName": {
+              "type": "string",
+              "defaultValue": "gpt-4o-mini-tts",
+              "metadata": {
+                "description": "Optional. TTS (text-to-speech) model/deployment name."
+              }
+            },
+            "ttsModelVersion": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. TTS model version. Leave empty to let Foundry pick the model default version; set to pin a specific version string."
+              }
+            },
+            "ttsSkuName": {
+              "type": "string",
+              "defaultValue": "GlobalStandard",
+              "metadata": {
+                "description": "Optional. TTS deployment SKU name (GlobalStandard or Standard, as offered in the region)."
+              }
+            },
+            "ttsCapacity": {
+              "type": "int",
+              "defaultValue": 1,
+              "metadata": {
+                "description": "Optional. TTS deployment capacity (capacity units; raise per your regional quota)."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "defaultValue": {},
+              "metadata": {
+                "description": "Optional. Tags to apply to the account."
+              }
+            }
+          },
+          "variables": {
+            "sttModel": "[if(empty(parameters('sttModelVersion')), createObject('name', parameters('sttModelName'), 'format', 'OpenAI'), createObject('name', parameters('sttModelName'), 'format', 'OpenAI', 'version', parameters('sttModelVersion')))]",
+            "ttsModel": "[if(empty(parameters('ttsModelVersion')), createObject('name', parameters('ttsModelName'), 'format', 'OpenAI'), createObject('name', parameters('ttsModelName'), 'format', 'OpenAI', 'version', parameters('ttsModelVersion')))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.CognitiveServices/accounts",
+              "apiVersion": "2024-10-01",
+              "name": "[parameters('name')]",
+              "location": "[parameters('location')]",
+              "kind": "AIServices",
+              "sku": {
+                "name": "[parameters('sku')]"
+              },
+              "properties": {
+                "customSubDomainName": "[parameters('customSubDomainName')]",
+                "disableLocalAuth": true,
+                "publicNetworkAccess": "Enabled"
+              },
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.CognitiveServices/accounts/deployments",
+              "apiVersion": "2024-10-01",
+              "name": "[format('{0}/{1}', parameters('name'), parameters('sttModelName'))]",
+              "sku": {
+                "name": "[parameters('sttSkuName')]",
+                "capacity": "[parameters('sttCapacity')]"
+              },
+              "properties": {
+                "model": "[variables('sttModel')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.CognitiveServices/accounts/deployments",
+              "apiVersion": "2024-10-01",
+              "name": "[format('{0}/{1}', parameters('name'), parameters('ttsModelName'))]",
+              "sku": {
+                "name": "[parameters('ttsSkuName')]",
+                "capacity": "[parameters('ttsCapacity')]"
+              },
+              "properties": {
+                "model": "[variables('ttsModel')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
+                "[resourceId('Microsoft.CognitiveServices/accounts/deployments', parameters('name'), parameters('sttModelName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "accountId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Foundry account."
+              },
+              "value": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]"
+            },
+            "accountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Foundry account."
+              },
+              "value": "[parameters('name')]"
+            },
+            "endpoint": {
+              "type": "string",
+              "metadata": {
+                "description": "Primary endpoint of the Foundry account (already ends with a trailing slash)."
+              },
+              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), '2024-10-01').endpoint]"
+            },
+            "foundryOpenAiV1BaseUrl": {
+              "type": "string",
+              "metadata": {
+                "description": "Computed OpenAI v1 base URL for the gateway: <endpoint>openai/v1/."
+              },
+              "value": "[format('{0}openai/v1/', reference(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), '2024-10-01').endpoint)]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "keyvault",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "name": {
+            "value": "[variables('keyVaultName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.33.93.31351",
+              "templateHash": "12278052413870605987"
+            },
+            "name": "Sekisho Key Vault (Key store)",
+            "description": "RBAC-authorized, soft-delete-enabled Key Vault that backs the Sekisho \"Key store\". Sekisho Keys are stored as Key Vault secrets; the gateway managed identity is granted Key Vault Secrets Officer via rbac.bicep. Implements ADR 0001."
+          },
+          "parameters": {
+            "name": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Key Vault name (3-24 chars, globally unique)."
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "[resourceGroup().location]",
+              "metadata": {
+                "description": "Optional. Location for the Key Vault."
+              }
+            },
+            "sku": {
+              "type": "string",
+              "defaultValue": "standard",
+              "allowedValues": [
+                "standard",
+                "premium"
+              ],
+              "metadata": {
+                "description": "Optional. SKU. \"standard\" is sufficient because Sekisho Keys are stored as secrets (not HSM-backed keys)."
+              }
+            },
+            "softDeleteRetentionInDays": {
+              "type": "int",
+              "defaultValue": 90,
+              "minValue": 7,
+              "maxValue": 90,
+              "metadata": {
+                "description": "Optional. Soft-delete retention in days."
+              }
+            },
+            "enablePurgeProtection": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Optional. Enable purge protection. Off by default for easy POC teardown; turn ON for production."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "defaultValue": {},
+              "metadata": {
+                "description": "Optional. Tags to apply to the vault."
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2023-07-01",
+              "name": "[parameters('name')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "tenantId": "[tenant().tenantId]",
+                "sku": {
+                  "family": "A",
+                  "name": "[parameters('sku')]"
+                },
+                "enableRbacAuthorization": true,
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": "[parameters('softDeleteRetentionInDays')]",
+                "enablePurgeProtection": "[if(parameters('enablePurgeProtection'), true(), null())]",
+                "publicNetworkAccess": "Enabled"
+              }
+            }
+          ],
+          "outputs": {
+            "vaultId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Key Vault."
+              },
+              "value": "[resourceId('Microsoft.KeyVault/vaults', parameters('name'))]"
+            },
+            "vaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Key Vault."
+              },
+              "value": "[parameters('name')]"
+            },
+            "vaultUri": {
+              "type": "string",
+              "metadata": {
+                "description": "URI of the Key Vault (KEY_VAULT_URI for the gateway)."
+              },
+              "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('name')), '2023-07-01').vaultUri]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "aca",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "name": {
+            "value": "[variables('appName')]"
+          },
+          "environmentName": {
+            "value": "[variables('environmentName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "containerImage": {
+            "value": "[parameters('containerImage')]"
+          },
+          "foundryBaseUrl": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'foundry'), '2022-09-01').outputs.foundryOpenAiV1BaseUrl.value]"
+          },
+          "keyVaultUri": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'keyvault'), '2022-09-01').outputs.vaultUri.value]"
+          },
+          "aadClientId": {
+            "value": "[parameters('aadClientId')]"
+          },
+          "aadClientSecret": {
+            "value": "[parameters('aadClientSecret')]"
+          },
+          "openIdIssuer": {
+            "value": "[variables('effectiveIssuer')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.33.93.31351",
+              "templateHash": "3835950472702379219"
+            },
+            "name": "Sekisho gateway — Azure Container Apps (environment + app + Easy Auth)",
+            "description": "Container Apps managed environment and the Sekisho gateway Container App: system-assigned managed identity, external ingress on 8000, gateway env wiring, and Container Apps built-in authentication (Easy Auth) with Microsoft Entra. Implements ADR 0001 and ADR 0003."
+          },
+          "parameters": {
+            "name": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Name of the gateway Container App."
+              }
+            },
+            "environmentName": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Name of the Container Apps managed environment."
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "[resourceGroup().location]",
+              "metadata": {
+                "description": "Optional. Location for the environment and app."
+              }
+            },
+            "containerImage": {
+              "type": "string",
+              "defaultValue": "mcr.microsoft.com/k8se/quickstart:latest",
+              "metadata": {
+                "description": "Optional. Gateway container image. Defaults to a public placeholder; CI replaces it with the real Sekisho image."
+              }
+            },
+            "foundryBaseUrl": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Foundry OpenAI v1 base URL (from the foundry module): FOUNDRY_BASE_URL."
+              }
+            },
+            "keyVaultUri": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Key Vault URI (from the keyvault module): KEY_VAULT_URI."
+              }
+            },
+            "foundryTokenScope": {
+              "type": "string",
+              "defaultValue": "https://ai.azure.com/.default",
+              "metadata": {
+                "description": "Optional. Entra token scope the gateway uses to call Foundry."
+              }
+            },
+            "anonymousMode": {
+              "type": "string",
+              "defaultValue": "false",
+              "metadata": {
+                "description": "Optional. Anonymous mode toggle for inbound Key checks. Off by default (ADR 0001)."
+              }
+            },
+            "aadClientId": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Entra app registration (client) ID used by Container Apps Easy Auth."
+              }
+            },
+            "aadClientSecret": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Required. Entra app registration client secret. Stored as an ACA secret (never hardcoded)."
+              }
+            },
+            "openIdIssuer": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. OpenID issuer URL for the Entra tenant (the v2.0 issuer endpoint)."
+              }
+            },
+            "minReplicas": {
+              "type": "int",
+              "defaultValue": 1,
+              "metadata": {
+                "description": "Optional. Minimum replica count (ADR 0001 keeps at least one warm for token caching)."
+              }
+            },
+            "maxReplicas": {
+              "type": "int",
+              "defaultValue": 3,
+              "metadata": {
+                "description": "Optional. Maximum replica count."
+              }
+            },
+            "targetPort": {
+              "type": "int",
+              "defaultValue": 8000,
+              "metadata": {
+                "description": "Optional. Container ingress target port."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "defaultValue": {},
+              "metadata": {
+                "description": "Optional. Tags to apply to the environment and app."
+              }
+            }
+          },
+          "variables": {
+            "aadClientSecretName": "aad-client-secret"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.App/managedEnvironments",
+              "apiVersion": "2024-03-01",
+              "name": "[parameters('environmentName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "zoneRedundant": false
+              }
+            },
+            {
+              "type": "Microsoft.App/containerApps",
+              "apiVersion": "2024-03-01",
+              "name": "[parameters('name')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "properties": {
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+                "configuration": {
+                  "activeRevisionsMode": "Single",
+                  "ingress": {
+                    "external": true,
+                    "targetPort": "[parameters('targetPort')]",
+                    "transport": "auto",
+                    "allowInsecure": false
+                  },
+                  "secrets": [
+                    {
+                      "name": "[variables('aadClientSecretName')]",
+                      "value": "[parameters('aadClientSecret')]"
+                    }
+                  ]
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "sekisho",
+                      "image": "[parameters('containerImage')]",
+                      "resources": {
+                        "cpu": "[json('0.5')]",
+                        "memory": "1Gi"
+                      },
+                      "env": [
+                        {
+                          "name": "FOUNDRY_BASE_URL",
+                          "value": "[parameters('foundryBaseUrl')]"
+                        },
+                        {
+                          "name": "FOUNDRY_TOKEN_SCOPE",
+                          "value": "[parameters('foundryTokenScope')]"
+                        },
+                        {
+                          "name": "ANONYMOUS_MODE",
+                          "value": "[parameters('anonymousMode')]"
+                        },
+                        {
+                          "name": "KEY_VAULT_URI",
+                          "value": "[parameters('keyVaultUri')]"
+                        }
+                      ]
+                    }
+                  ],
+                  "scale": {
+                    "minReplicas": "[parameters('minReplicas')]",
+                    "maxReplicas": "[parameters('maxReplicas')]"
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/containerApps/authConfigs",
+              "apiVersion": "2024-03-01",
+              "name": "[format('{0}/{1}', parameters('name'), 'current')]",
+              "properties": {
+                "platform": {
+                  "enabled": true
+                },
+                "globalValidation": {
+                  "unauthenticatedClientAction": "AllowAnonymous"
+                },
+                "identityProviders": {
+                  "azureActiveDirectory": {
+                    "enabled": true,
+                    "registration": {
+                      "clientId": "[parameters('aadClientId')]",
+                      "clientSecretSettingName": "[variables('aadClientSecretName')]",
+                      "openIdIssuer": "[parameters('openIdIssuer')]"
+                    }
+                  }
+                },
+                "login": {
+                  "preserveUrlFragmentsForLogins": false
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/containerApps', parameters('name'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "appName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the gateway Container App."
+              },
+              "value": "[parameters('name')]"
+            },
+            "appFqdn": {
+              "type": "string",
+              "metadata": {
+                "description": "Public FQDN of the gateway Container App."
+              },
+              "value": "[reference(resourceId('Microsoft.App/containerApps', parameters('name')), '2024-03-01').configuration.ingress.fqdn]"
+            },
+            "appPrincipalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Principal (object) ID of the system-assigned managed identity of the app."
+              },
+              "value": "[reference(resourceId('Microsoft.App/containerApps', parameters('name')), '2024-03-01', 'full').identity.principalId]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'foundry')]",
+        "[resourceId('Microsoft.Resources/deployments', 'keyvault')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "rbac",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "principalId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'aca'), '2022-09-01').outputs.appPrincipalId.value]"
+          },
+          "foundryAccountName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'foundry'), '2022-09-01').outputs.accountName.value]"
+          },
+          "keyVaultName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'keyvault'), '2022-09-01').outputs.vaultName.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.33.93.31351",
+              "templateHash": "7730296184743668657"
+            },
+            "name": "Sekisho RBAC — role assignments to the gateway managed identity",
+            "description": "Grants the ACA system-assigned managed identity the two data-plane roles it needs: Cognitive Services User on the Foundry account, and Key Vault Secrets Officer on the Key Vault. Implements ADR 0001. Uses native, correctly-scoped extension role assignments."
+          },
+          "parameters": {
+            "principalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Principal (object) ID of the ACA system-assigned managed identity."
+              }
+            },
+            "foundryAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Name of the Foundry (Cognitive Services) account to scope the Cognitive Services User role to."
+              }
+            },
+            "keyVaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Required. Name of the Key Vault to scope the Key Vault Secrets Officer role to."
+              }
+            },
+            "principalType": {
+              "type": "string",
+              "defaultValue": "ServicePrincipal",
+              "metadata": {
+                "description": "Optional. Principal type. \"ServicePrincipal\" is correct for a managed identity."
+              }
+            }
+          },
+          "variables": {
+            "cognitiveServicesUserRoleId": "a97b65f3-24c7-4388-baec-2e87618995b6",
+            "keyVaultSecretsOfficerRoleId": "b86a8fe4-44ce-4948-aee7-ecce2b3f48c9"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', parameters('foundryAccountName'))]",
+              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryAccountName')), parameters('principalId'), variables('cognitiveServicesUserRoleId'))]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesUserRoleId'))]",
+                "principalType": "[parameters('principalType')]"
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[format('Microsoft.KeyVault/vaults/{0}', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('principalId'), variables('keyVaultSecretsOfficerRoleId'))]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsOfficerRoleId'))]",
+                "principalType": "[parameters('principalType')]"
+              }
+            }
+          ],
+          "outputs": {
+            "cognitiveServicesUserAssignmentId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Cognitive Services User role assignment."
+              },
+              "value": "[extensionResourceId(resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryAccountName')), parameters('principalId'), variables('cognitiveServicesUserRoleId')))]"
+            },
+            "keyVaultSecretsOfficerAssignmentId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Key Vault Secrets Officer role assignment."
+              },
+              "value": "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('principalId'), variables('keyVaultSecretsOfficerRoleId')))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'aca')]",
+        "[resourceId('Microsoft.Resources/deployments', 'foundry')]",
+        "[resourceId('Microsoft.Resources/deployments', 'keyvault')]"
+      ]
+    }
+  ],
+  "outputs": {
+    "gatewayFqdn": {
+      "type": "string",
+      "metadata": {
+        "description": "Public FQDN of the Sekisho gateway (point OpenAI SDK base_url here)."
+      },
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'aca'), '2022-09-01').outputs.appFqdn.value]"
+    },
+    "foundryEndpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "Foundry account endpoint. The OpenAI v1 base is <foundryEndpoint>openai/v1/."
+      },
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'foundry'), '2022-09-01').outputs.endpoint.value]"
+    },
+    "keyVaultUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault URI backing the Sekisho Key store."
+      },
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'keyvault'), '2022-09-01').outputs.vaultUri.value]"
+    }
+  }
+}

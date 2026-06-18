@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Sekisho{% endblock %}</title>
+    <link rel="stylesheet" href="/static/vendor/pico.min.css">
+    <script defer src="/static/vendor/htmx.min.js"></script>
+    <script defer src="/static/vendor/alpine.min.js"></script>
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <nav>
+        <ul><li><strong>Sekisho</strong></li></ul>
+        <ul>
+          <li><a href="/admin">Admin</a></li>
+          <li><a href="/playground">Playground</a></li>
+        </ul>
+      </nav>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

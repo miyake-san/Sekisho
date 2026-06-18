@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Sekisho Playground{% endblock %}
+{% block content %}
+<h1>Playground</h1>
+{% if not playground_enabled %}
+<article role="alert">
+  <strong>Playground disabled.</strong> Set <code>PLAYGROUND_KEY</code> to use chat, transcription, and speech.
+</article>
+{% endif %}
+
+<section x-data="sekishoPlayground({ enabled: {{ 'true' if playground_enabled else 'false' }} })">
+  <h2>Chat</h2>
+  <form @submit.prevent="sendChat">
+    <label>
+      Message
+      <textarea x-model="message" :disabled="!enabled" required></textarea>
+    </label>
+    <button type="submit" :disabled="!enabled || chatBusy">Send</button>
+  </form>
+  <article>
+    <pre id="chat-output" x-text="chatOutput"></pre>
+  </article>
+
+  <h2>Speech to text</h2>
+  <button type="button" @click="toggleRecording" :disabled="!enabled || sttBusy" x-text="recording ? 'Stop recording' : 'Record mic'"></button>
+  <p x-text="transcript"></p>
+
+  <h2>Text to speech</h2>
+  <form @submit.prevent="speak">
+    <label>
+      Text
+      <textarea x-model="speechText" :disabled="!enabled" required></textarea>
+    </label>
+    <button type="submit" :disabled="!enabled || ttsBusy">Speak</button>
+  </form>
+  <audio x-ref="audio" controls></audio>
+</section>
+{% endblock %}

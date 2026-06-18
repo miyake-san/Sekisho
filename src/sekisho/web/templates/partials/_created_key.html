@@ -1,0 +1,21 @@
+{% if error %}
+<article role="alert">
+  <strong>Key operation failed.</strong> {{ error }}
+</article>
+{% endif %}
+{% if created_key %}
+<article>
+  <h3>Store this Key now</h3>
+  <p><strong>This secret value is shown exactly once and cannot be recovered later.</strong></p>
+  <label>
+    New value for <code>{{ created_key.name }}</code>
+    <input readonly value="{{ created_key.value }}" onclick="this.select(); navigator.clipboard && navigator.clipboard.writeText(this.value)">
+  </label>
+  {% if created_key.previous_valid_until %}
+  <p>The previous value remains valid during the configured grace period.</p>
+  {% endif %}
+</article>
+{% endif %}
+<template hx-swap-oob="outerHTML:#key-list">
+  {% include "partials/_key_list.html" %}
+</template>

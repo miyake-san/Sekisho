@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Sekisho Admin{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+<p>
+  Signed in as <strong>{{ principal_name }}</strong>.
+  <form method="post" action="/admin/logout" style="display:inline">
+    <button type="submit" class="secondary outline">Sair</button>
+  </form>
+</p>
+
+<section>
+  <h2>Create Key</h2>
+  <form hx-post="/admin/keys" hx-target="#created-key" hx-swap="innerHTML">
+    <label>
+      Key name
+      <input name="name" required pattern="[A-Za-z0-9-]{1,127}" autocomplete="off">
+    </label>
+    <button type="submit">Create key</button>
+  </form>
+  <div id="created-key"></div>
+</section>
+
+<section>
+  <h2>Keys</h2>
+  {% include "partials/_key_list.html" %}
+</section>
+{% endblock %}
