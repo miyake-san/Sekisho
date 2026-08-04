@@ -5,7 +5,7 @@ description = "Managed-identity reverse-proxy gateway for Microsoft Foundry Open
 readme = "CONTEXT.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "aiohttp>=3.10.0",
+    "aiohttp>=3.14.3",
     "anyio>=4.14.0",
     "azure-identity>=1.25.3",
     "azure-keyvault-secrets>=4.11.0",
